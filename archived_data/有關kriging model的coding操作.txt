@@ -1,0 +1,11 @@
+mean 的估計有解釋變數x(雨量 濕度 氣溫等)先用basis刻畫 
+
+假設反應變數為確診y,則 x_1=b_1*basis, x_2=b_2*basis ,.....透過basis可以知道現在的解釋變數們都用一個函數去描繪了
+
+即=>f(x_1),....,f(x_2),則,隨位置不同所蒐集的變數也不同所表示的關係 , y = B_1*f(x_1)+B_2*f(x_2)+......+corelation tern + error tern
+
+之後先估計一次  y' = B_1*f(x_1)+B_2*f(x_2)+...... ,再用y-y' 剩下就是 f' = corelation tern + error tern 之後估計完再用y-f'
+
+所表示的mean就是只與location有關的mean tern且包含感興趣變數
+
+covariance的估計可能有nugget effect 所以透過variogram 估計時建議打開

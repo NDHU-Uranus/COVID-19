@@ -1,0 +1,200 @@
+---
+title: "basis mean test"
+author: "Shiung"
+date: '2022-04-07'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(magrittr)
+library(ggplot2)
+library(viridis)
+library(autoFRK)
+library(plotly)
+library(plot3D)
+library(Metrics)
+library(plot3Drgl)
+
+set.seed(4598)
+mul<-function(n,jj) {
+  #random generate coords
+  #mm,is sigma^2 ->mm*(exp(...))
+  x <- runif(n,max = jj,min = 0)
+  y <- runif(n,max = jj,min = 0)
+  xxx<-cbind(x,y)
+  #xxx<-expand.grid(x = x, y = y)
+  return(list(x=xxx,jj)) 
+}
+multi_data<-mul(1000,5)
+
+jj<-multi_data[[2]]
+multicoor <- multi_data[[1]] 
+grid_po <-multicoor
+
+##---------observation = linear function (mean tern) + covariance tern
+# (linear mean tern)
+simean<-function(n,x,y){
+  # z1=3*x+4*y
+  err<- rnorm(n, mean = 0, sd = 1)
+  z2 = 10*x + 1.9*y^2  +  err
+  #+ 4*x^3 + 20*y^4
+  # sim_mean<-cbind(z1,z2,z3)
+  #  return(sim_mean)
+  return(z2)
+}
+
+simumean <- simean(length(multicoor[,1]),multicoor[1],multicoor[2])
+muldata <- simumean
+
+
+# random value
+multidata <- as.data.frame(muldata) 
+summary(multidata)
+
+#merge coordinates & value
+gridpo<-cbind(grid_po,multidata)
+colnames(gridpo)[3] <- "value"
+#set outlier
+#gridpo[10,3]<-700
+#gridpo[26,3]<-800
+
+# color plot
+realdot<-gridpo%>% as.data.frame %>% 
+     ggplot(aes(x, y)) + geom_point(aes(colour = value)) + 
+     labs(title="real dot") + 
+     scale_color_viridis(option = "D")
+realdot
+
+stan_e<-function(ei){
+  sigma<-median(abs(ei-median(ei)))/0.6745
+  e_stan<-ei/sigma   
+  return(e_stan)
+}
+
+new_residu<-function(X,Y,beta){
+  tt<- X %*% beta
+  new_res <- as.matrix(Y-tt)
+  return(new_res)
+}
+
+# huber weight function(second differential)
+hu_weifun <-function(residual.wei, k ){
+  temp_2<-c() 
+  # j=1
+  # k=1.345
+  for (j in 1:length(residual.wei)) {
+    if(abs(residual.wei[j]) <= k){
+      temp_2[j] <- 1
+    } 
+    else {
+      temp_2[j] <- k/abs(residual.wei[j])
+    }
+  }
+  return(temp_2)
+}
+
+# weighted least squares
+WLS<-function(X,Y,W){
+  w_b = solve(t(X) %*% W %*% X) %*% t(X) %*% W %*% Y
+  return(w_b)
+}
+
+#iterative reweighted least squares
+IRLS<-function(X,Y,max.iter,conv.eps){
+  beta_init <- solve(t(X) %*% X) %*% t(X) %*% Y #initialize beta
+  # lmmodel<- lm(formula= Y ~ X,data=data)[[1]]
+  # names(lmmodel)<- NULL
+  # beta_init<-lmmodel[-1]
+  beta_prev <- beta_init               #beta_{t-1} (for comparisons)
+  mean_fun<- X %*% beta_init
+  e_i.prev<- as.matrix(Y-mean_fun)
+  
+  for(ii in 1:max.iter){
+    standar_ei <- stan_e(new_residu(X,Y,beta_prev)) 
+    W <-  diag(hu_weifun(residual.wei=standar_ei, k = 1.345))
+    new_beta <- WLS(X=X,Y=Y,W=W)
+    if( sum((beta_prev-new_beta)^2) <= conv.eps){
+      break
+    } else {
+      e_i.prev <- standar_ei
+      beta_prev <- new_beta
+    }
+    if(ii%%5 == 0) cat("iterative: ", ii, "\n")
+  }
+  return(list(new_beta,e_i.prev)) 
+}
+
+###----------number of basis = 5
+# use simulation location in mrts to generate basis
+bbaa <- 30 # number of basis
+simubas <- as.matrix(mrts(knot = gridpo[1:2], bbaa))
+#oc:outcome
+oc<- IRLS(X=simubas,Y=gridpo[,3],max.iter=100,conv.eps=1e-5)
+oc[[1]]
+irls.simresidu <-oc[[2]]
+
+qqnorm(irls.simresidu,main="Normal Q-Q plot with mean")
+qqline(irls.simresidu, col = "steelblue", lwd = 2)
+
+#真實(標準化後)與估計出來的函數 帶值後比較
+predbas <- simubas%*% oc[[1]]
+preebas<-cbind(gridpo[,3],predbas,gridpo[,3]-predbas)
+colnames(preebas) <- c("real","estimate","residual")
+
+summary(preebas)
+
+
+simu_MSE = mse(gridpo$value,  predata$predbas)
+simu_MSE
+#---------------no use huber only LS(in basis)
+X=simubas
+Y=gridpo[,3]
+beta_init <- solve(t(X) %*% X) %*% t(X) %*% Y #LS
+#WLS
+e_i.prev<- Y-X %*% beta_init
+W <-  diag(as.numeric(1/e_i.prev))
+new_beta <- WLS(X=X,Y=Y,W=W)
+compairLS<-cbind(beta_init ,new_beta,oc[[1]])
+
+#---------------no use huber only LS(in location)
+X=as.matrix(gridpo[,-3]) 
+Y=gridpo[,3]
+beta_init <- solve(t(X) %*% X) %*% t(X) %*% Y #LS
+cat("location LS=",beta_init) 
+#WLS
+e_i.prev<- Y-X %*% beta_init
+W <-  diag(as.numeric(1/e_i.prev))
+new_beta <- WLS(X=X,Y=Y,W=W)
+cat("location WLS=",new_beta)
+
+# predict dot map vs real dot map
+predata <-cbind(gridpo[,-3],predbas)
+predot<-predata %>%as.data.frame %>% 
+     ggplot(aes(x, y)) + geom_point(aes(colour = predbas)) + 
+     labs(title="pre dot") +
+     scale_color_viridis(option = "D")
+
+dotvs <-subplot(predot,realdot)%>% 
+  layout(title = 'predict and real')
+dotvs
+
+# 3D in real value---1
+scatter3D(gridpo$x, gridpo$y, gridpo$value,
+                  zlab="value",phi = 10, theta = 10,main="real value Plot")
+# 3D plot in estimate value---1
+scatter3D(predata$x, predata$y, predata$predbas,
+                  zlab="value",phi = 10, theta = 10,main="estimate value Plot")
+
+### 3D Histogram in real value---2
+# hist3D_fancy(gridpo$x, gridpo$y, colvar=as.numeric(gridpo$value))
+# plotrgl()
+# ### 3D Histogram in estimate value---2
+# hist3D_fancy(iris$Sepal.Length, iris$Petal.Width, colvar=as.numeric(iris$Species))
+# plotrgl()
+
+```
+
+##use package in huber's m estimate
+library(robustreg)
+zzxxc<-robustRegH(datatata$value ~ datatata$x1+datatata$x2, data=datatata,tune=1.345,m=TRUE,max.it=1000,tol=1e-5 )
+zzxxc[[1]]

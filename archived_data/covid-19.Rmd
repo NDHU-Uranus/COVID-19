@@ -1,0 +1,213 @@
+---
+title: "covid-19"
+author: "610811103熊英翰"
+date: "2023/2/20"
+output: html_document
+---
+Word data about COVID-19
+```{r echo=FALSE}
+library(lubridate)
+library(tidyverse)
+library(ggplot2)
+library(ggmap)
+require(car)
+library(maps) 
+library(dplyr) 
+###total data
+covid1128_to <- read.csv("D:\\研究所Meeting\\COVID19\\csse_covid_19_data\\csse_covid_19_daily_reports_us\\11-18-2020(modify).csv")
+covid1128_to[is.na(covid1128_to)] <- 0
+#request Confirmed data from large to small
+covid1128_to_sub1 <- covid1128_to[c(-2,-3,-13,-14,-38),c(-2,-3,-5,-6,-7)] %>%
+  arrange(desc(Confirmed))
+
+covid1128_to_sub2 <- covid1128_to[c(-2,-3,-13,-14,-38),]
+
+#request death data from large to small
+covid1128_to_sub3 <- covid1128_to[c(-2,-3,-13,-14,-38),c(-2,-3,-4,-6,-7)] %>%
+  arrange(desc(Deaths))
+
+# FROM: https://www.ecdc.europa.eu
+data <- read.csv("https://opendata.ecdc.europa.eu/covid19/casedistribution/csv", na.strings = "", fileEncoding = "UTF-8-BOM" , stringsAsFactors = F)
+head(data)
+```
+Word Confirmed
+```{r echo=FALSE}
+data$date_reported <- dmy(data$dateRep)
+# total cases(Confirmed) worldwide to date
+sum(data$cases)
+```
+
+word death
+```{r echo=FALSE}
+# total deaths worldwide to date
+sum(data$deaths)
+```
+Confirmed with each country
+```{r echo=FALSE}
+# total cases and max single day by country
+total_cases<-data %>% 
+  group_by(countriesAndTerritories) %>% 
+  summarise(cases_sum = sum(cases), cases_max = max(cases)) %>% 
+  arrange(desc(cases_sum)) %>% as.data.frame()
+head(total_cases)
+```
+
+Death with each country
+```{r echo=FALSE}
+# total deaths and max single day by country
+total_deaths<-data %>% 
+  group_by(countriesAndTerritories) %>% 
+  summarise(deaths_sum = sum(deaths), deaths_max = max(deaths)) %>% 
+  arrange(desc(deaths_sum)) %>% as.data.frame()
+head(total_deaths)
+```
+
+US weekly Confirmed
+```{r echo=FALSE}
+#plot cases in us
+us <- data[data$countriesAndTerritories == 'United_States_of_America',]
+head(us)
+US_cases <- ggplot(us, 
+                   aes(date_reported, as.numeric(cases))) +
+  geom_col(fill = 'blue', alpha = 0.6) + 
+  theme_minimal(base_size = 14) +
+  xlab(NULL) + ylab(NULL) + 
+  scale_x_date(date_labels = "%Y/%m/%d")
+US_cases + labs(title="weekly COVID-19 Cases in US")
+```
+
+US weekly death
+```{r echo=FALSE}
+#plot death in us
+US_deaths <- ggplot(us, 
+                    aes(date_reported, as.numeric(deaths))) +
+  geom_col(fill = 'purple', alpha = 0.6) + 
+  theme_minimal(base_size = 14) +
+  xlab(NULL) + ylab(NULL) + 
+  scale_x_date(date_labels = "%Y/%m/%d")
+US_deaths + labs(title="weekly COVID-19 Deaths in US")
+```
+
+UK weekly Confirmed
+```{r}
+#plot cases in uk
+uk <- data[data$countriesAndTerritories == 'United_Kingdom',]
+head(uk)
+UK_cases <- ggplot(uk, 
+                   aes(date_reported, as.numeric(cases))) +
+  geom_col(fill = 'blue', alpha = 0.6) + 
+  theme_minimal(base_size = 14) +
+  xlab(NULL) + ylab(NULL) + 
+  scale_x_date(date_labels = "%Y/%m/%d")
+UK_cases + labs(title="weekly COVID-19 Cases in UK")
+
+```
+
+UK weekly death
+```{r}
+#plot cases in uk
+uk <- data[data$countriesAndTerritories == 'United_Kingdom',]
+head(uk)
+UK_cases <- ggplot(uk, 
+                   aes(date_reported, as.numeric(deaths))) +
+  geom_col(fill = 'blue', alpha = 0.6) + 
+  theme_minimal(base_size = 14) +
+  xlab(NULL) + ylab(NULL) + 
+  scale_x_date(date_labels = "%Y/%m/%d")
+UK_cases + labs(title="weekly COVID-19 Deaths in UK")
+```
+
+
+Multiple Countries weekly Confirmed
+```{r echo=FALSE}
+### Compare Multiple Countries
+# lists the cumulative number of new cases over the past 14 days per 100,000 people in that country
+china <- data[data$countriesAndTerritories == 'China',]
+spain <- data[data$countriesAndTerritories == 'Spain',]
+italy <- data[data$countriesAndTerritories == 'Italy',]
+USplot <- ggplot(us, 
+                 aes(date_reported, as.numeric(Cumulative_number_for_14_days_of_COVID.19_cases_per_100000))) +
+  geom_col(fill = 'blue', alpha = 0.6) + 
+  theme_minimal(base_size = 14) +
+  xlab(NULL) + ylab(NULL) + 
+  scale_x_date(date_labels = "%Y/%m/%d")
+China_US <- USplot + geom_col(data=china, 
+                              aes(date_reported, as.numeric(Cumulative_number_for_14_days_of_COVID.19_cases_per_100000)),
+                              fill="red",
+                              alpha = 0.5)
+Ch_US_Sp <- China_US + geom_col(data=spain, 
+                                aes(date_reported, as.numeric(Cumulative_number_for_14_days_of_COVID.19_cases_per_100000)),
+                                fill="yellow",
+                                alpha = 0.4)
+Chn_US_Sp_It <- Ch_US_Sp + geom_col(data=italy, 
+                                    aes(date_reported, as.numeric(Cumulative_number_for_14_days_of_COVID.19_cases_per_100000)),
+                                    fill="dark green",
+                                    alpha = 0.9)
+Chn_US_Sp_It + labs(title="China, US, Italy, & Spain")
+
+```
+
+Draw the US confirmed map
+```{r echo=FALSE}
+#draw the US map
+s <- map_data("state")
+ggplot(s,aes(x = long, y = lat, group = group)) + 
+  geom_polygon(color = 'pink') +
+  coord_map('polyconic') 
+#changing to lower case
+covid1128_to_sub1$Province_State <- tolower(covid1128_to_sub1$Province_State)
+#merge data
+data_con <- merge(s,covid1128_to_sub1,
+               by.x = 'region',
+               by.y = 'Province_State')
+ggplot(data_con,aes(x = long, y = lat,
+                 group = group,
+                 fill = Confirmed)) + 
+  geom_polygon(color = 'gray') +
+  coord_map('polyconic') +
+  scale_fill_gradient2()      
+
+```
+Draw the US death map
+```{r}
+#changing to lower case
+covid1128_to_sub3$Province_State <- tolower(covid1128_to_sub3$Province_State)
+#merge data
+data_dea <- merge(s,covid1128_to_sub3,
+               by.x = 'region',
+               by.y = 'Province_State')
+ggplot(data_dea,aes(x = long, y = lat,
+                 group = group,
+                 fill = Deaths)) + 
+  geom_polygon(color = 'gray') +
+  coord_map('polyconic') +
+  scale_fill_gradient(low = "white", high = "pink")  
+```
+
+use linear model 
+```{r echo=FALSE}
+covid1128_to_sub_lm <- lm(Confirmed~Bed,data=covid1128_to_sub2)
+summary(covid1128_to_sub_lm)
+```
+
+```{r echo=FALSE}
+#because the p-value > 0.05 means that H0 will not be rejected
+shapiro.test(covid1128_to_sub_lm$residual)
+qqnorm(covid1128_to_sub_lm$residual)
+qqline(covid1128_to_sub_lm$residual)
+#Independent residual test
+durbinWatsonTest(covid1128_to_sub_lm) 
+```
+
+```{r echo=FALSE}
+library(MASS)
+m1 <- glm.nb(Confirmed ~ Bed, data = covid1128_to_sub2)
+summary(m1)
+with(m1, cbind(res.deviance = deviance, df = df.residual,
+               covid1128 = pchisq(deviance, df.residual, lower.tail=FALSE)))
+```
+
+
+
+
+
