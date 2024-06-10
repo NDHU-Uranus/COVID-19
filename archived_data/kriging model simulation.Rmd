@@ -1,0 +1,1134 @@
+---
+title: "Kriging simulation"
+author: "Shiung"
+date: '2022-03-29'
+output: html_document
+---
+
+packages
+```{r, echo=FALSE, warning=FALSE,message=FALSE}
+#rm(list = ls())
+library(mvtnorm)
+library(MASS)
+library(fields)
+library(plotly)
+library(magrittr)
+library(geoR)
+library(autoFRK)
+library(graphics)
+library(Metrics)
+library(ggplot2)
+library(viridis)
+library(plot3D)
+library(plot3Drgl)
+library(dplyr)
+library(rgdal)
+library(sp)
+library(graphics)
+library(raster)
+library(gstat)
+library(rgdal)
+library(geoR)
+library(caret)
+library(scales)
+```
+
+mean functions
+```{r, echo=FALSE, warning=FALSE,message=FALSE}
+#---------------------------functions--------------------------------#
+
+#Standardization
+stan_e<-function(ei){
+  sigma<-median(abs(ei-median(ei)))/0.6745
+  e_stan<-ei/sigma   
+  return(e_stan)
+}
+
+new_residu<-function(X,Y,beta){
+  tt<- X %*% beta
+  new_res <- as.matrix(Y-tt)
+  return(new_res)
+}
+
+# huber weight function(second differential)
+hu_weifun <-function(residual.wei, k ){
+  temp_2<-c() 
+  # j=1
+  # k=1.345
+  for (j in 1:length(residual.wei)) {
+    if(abs(residual.wei[j]) <= k){
+      temp_2[j] <- 1
+    } 
+    else {
+      temp_2[j] <- k/abs(residual.wei[j])
+    }
+  }
+  return(temp_2)
+}
+
+# weighted least squares
+WLS<-function(X,Y,W){
+  w_b = solve(t(X) %*% W %*% X) %*% t(X) %*% W %*% Y
+  return(w_b)
+}
+
+#iterative reweighted least squares
+IRLS<-function(X,Y,max.iter,conv.eps){
+  beta_init <- solve(t(X) %*% X) %*% t(X) %*% Y #initialize beta
+  # lmmodel<- lm(formula= Y ~ X,data=data)[[1]]
+  # names(lmmodel)<- NULL
+  # beta_init<-lmmodel[-1]
+  beta_prev <- beta_init               #beta_{t-1} (for comparisons)
+  mean_fun<- X %*% beta_init
+  e_i.prev<- as.matrix(Y-mean_fun)
+  
+  for(ii in 1:max.iter){
+    standar_ei <- stan_e(new_residu(X,Y,beta_prev)) 
+    W <-  diag(hu_weifun(residual.wei=standar_ei, k = 1.345))
+    new_beta <- WLS(X=X,Y=Y,W=W)
+    if( sum((beta_prev-new_beta)^2) <= conv.eps){
+      break
+    } else {
+      e_i.prev <- standar_ei
+      beta_prev <- new_beta
+    }
+    if(ii%%5 == 0) cat("iterative: ", ii, "\n")
+  }
+  return(list(new_beta,e_i.prev)) 
+}
+
+```
+
+Simulation Case 1: random coordinary random valus(mean=linear)
+data1000 train00 test100 sigma^2=1 noise:N(0,1)
+```{r, echo=FALSE, warning=FALSE,message=FALSE}
+set.seed(788965)
+mul<-function(n,mm,jj) {
+  #random generate coords
+  #mm,is sigma^2 ->mm*(exp(...))
+   x <- runif(n,max = jj,min = 0)
+   y <- runif(n,max = jj,min = 0)
+  xxx<-cbind(x,y)
+  #covariance is stationary
+  #ele_cov = stationary.cov(x1 = xxx,x2 =NULL, theta = 1, Distance = "rdist", Covariance="Exponential")
+  #just covariance no any situation
+  ele_cov = cov(xxx)
+  asd =as.vector(t(rmvnorm(n/n, Sigma = mm*ele_cov)))  
+  return(list(x=xxx,data=asd,ele_cov,jj)) 
+}
+multi_data<-mul(1000,5,10)
+
+jj<-multi_data[[4]]
+covar<- multi_data[[2]]
+multicoor <- multi_data[[1]] 
+grid_po <-multicoor
+
+##---------observation = linear function (mean tern) + covariance tern
+# (linear mean tern)
+simean<-function(n,x,y){
+  # z1=3*x+4*y
+  err<- rnorm(n, mean = 0, sd = 5)
+  z2 = 14*x + 2.6*y^2  +  err
+  #+ 4*x^3
+  # + 20*y^4
+  # sim_mean<-cbind(z1,z2,z3)
+  #  return(sim_mean)
+  return(z2)
+}
+
+simumean <- simean(length(multicoor[,1]),multicoor[1],multicoor[2])
+
+muldata <- simumean + covar
+
+# random value
+#multidata <- as.data.frame(sample(muldata)) 
+multidata <- as.data.frame(muldata) 
+
+summary(multidata)
+
+#merge coordinates & value
+gridpo<-cbind(grid_po,multidata)
+colnames(gridpo)[3] <- "value"
+# color plot
+colop<-ggplot(gridpo, aes(x, y))+
+  geom_point(aes(color = value)) +
+  scale_color_viridis(option = "D")
+colop
+
+###-------diving train and test
+#random draw the grid point(with sample)
+# This random sample size will equal to line 1248(identity matrix:diag)
+nn <- 900 
+rangridpo<-sample(1:nrow(gridpo), nn)
+#simudata:simulation data(from random draw)
+simudata<-gridpo[rangridpo,]
+plot(grid_po,cex = 2 ,lwd = 2,main = 'Regular points with Random selected')
+# random pick the points and marked in red :train
+points(simudata[1:2],cex = 2,lwd = 2, col = "red")
+# other points are not be select will marked in blue :test
+simu_grid_poin<-gridpo[-rangridpo,]
+points(simu_grid_poin[1:2],cex = 2,lwd = 2, col = "blue")
+
+realdot<-simu_grid_poin%>% as.data.frame %>% 
+     ggplot(aes(x, y)) + geom_point(aes(colour = value)) + 
+     labs(title="real dot") + 
+     scale_color_viridis(option = "D")
+realdot
+
+###----------number of basis = 5
+# use simulation location in mrts to generate basis
+bbaa <- 25 # number of basis
+simubas <- as.matrix(mrts(knot = simudata[1:2], bbaa))
+
+###------------Huber M estimate to estimate β
+#------Huber----------#
+
+#Standardization
+stan_e<-function(ei){
+  sigma<-median(abs(ei-median(ei)))/0.6745
+  e_stan<-ei/sigma   
+  return(e_stan)
+}
+
+new_residu<-function(X,Y,beta){
+  tt<- X %*% beta
+  new_res <- as.matrix(Y-tt)
+  return(new_res)
+}
+
+# huber weight function(second differential)
+hu_weifun <-function(residual.wei, k ){
+  temp_2<-c() 
+  # j=1
+  # k=1.345
+  for (j in 1:length(residual.wei)) {
+    if(abs(residual.wei[j]) <= k){
+      temp_2[j] <- 1
+    } 
+    else {
+      temp_2[j] <- k/abs(residual.wei[j])
+    }
+  }
+  return(temp_2)
+}
+
+# weighted least squares
+WLS<-function(X,Y,W){
+  w_b = solve(t(X) %*% W %*% X) %*% t(X) %*% W %*% Y
+  return(w_b)
+}
+
+#iterative reweighted least squares
+IRLS<-function(X,Y,max.iter,conv.eps){
+  beta_init <- solve(t(X) %*% X) %*% t(X) %*% Y #initialize beta
+  # lmmodel<- lm(formula= Y ~ X,data=data)[[1]]
+  # names(lmmodel)<- NULL
+  # beta_init<-lmmodel[-1]
+  beta_prev <- beta_init               #beta_{t-1} (for comparisons)
+  mean_fun<- X %*% beta_init
+  e_i.prev<- as.matrix(Y-mean_fun)
+  
+  for(ii in 1:max.iter){
+    standar_ei <- stan_e(new_residu(X,Y,beta_prev)) 
+    W <-  diag(hu_weifun(residual.wei=standar_ei, k = 1.345))
+    new_beta <- WLS(X=X,Y=Y,W=W)
+    if( sum((beta_prev-new_beta)^2) <= conv.eps){
+      break
+    } else {
+      e_i.prev <- standar_ei
+      beta_prev <- new_beta
+    }
+    if(ii%%5 == 0) cat("iterative: ", ii, "\n")
+  }
+  return(list(new_beta,e_i.prev)) 
+}
+
+#oc:outcome
+oc<- IRLS(X=simubas,Y=simudata[,3],max.iter=100,conv.eps=1e-5)
+oc[[1]]
+irls.simresidu <-oc[[2]]
+
+#covariavce data = (observation data) - mean
+ covadata<- simudata[,3] - simubas%*%oc[[1]]
+
+# uvec : a vector with values used to define the variogram binning
+#variogram()
+#max.dist : length of variogram
+simuvario.b <- variog(coords = simudata[1:2], data = covadata,uvec=seq(0,jj, l=35), max.dist=6)
+plot(simuvario.b, main="binned variogram") 
+
+simuini.vals <- expand.grid(seq(0.1,simuvario.b$var.mark,l=jj*4), seq(0.1,jj,l=jj*4)) # sigma^2 (partial sill) and phi (range parameter)
+simuols <- variofit(simuvario.b,fix.nug=T, wei="equal",cov.model="exp", ini=simuini.vals)
+lines(simuols,lty=3,col=3,lwd=2)
+
+simuini.valss <- expand.grid(seq(0.1,simuols$cov.pars[1],l=jj*4), seq(0.1,jj,l=jj*4)) # sigma^2 (partial sill) and phi (range parameter)
+simuwls <- variofit(simuvario.b, ini=simuini.valss, fix.nug=T,wei="npairs",cov.model="exp")
+lines(simuwls, lty=2,col=4,lwd=2)
+
+###--------use kriging model  (weight=wls) and see the model fit (MSE)
+simuweight <- simuols
+# mean function residu
+# τ^2 + σ^2, corresponds to the variance of the observation process Y
+simresidu<-as.matrix(irls.simresidu)
+TPS_simu_beta_hat <- oc[[1]]
+# simu_b_grid:grid point(simu_grid_poin) into TPS basis
+simu_b_grid <- as.matrix(mrts(knot = simu_grid_poin[1:2], bbaa))
+simu_phi_s0 <- t(t(TPS_simu_beta_hat) %*% t(simu_b_grid))
+
+simu_c_s <-c()
+for (i in 1:length(simudata[,c("x")])){
+  for (j in 1:length(simu_grid_poin[,c("x")])){
+    # if(i==j){next}
+    #else{
+    simu_disten<-sqrt((simudata[,c("x")][i]-simu_grid_poin[,c("x")][j])^2+(simudata[,c("y")][i]-simu_grid_poin[,c("y")][j])^2) 
+    simu_c_s <- c(simu_c_s ,simu_disten)
+    # }
+  }
+  if(i%%50 == 0) cat("running: ", i, "\n")
+}
+simu_c_s0 <- simuweight$cov.pars[1]*exp(-abs(matrix(simu_c_s,nrow = nrow(simu_grid_poin))/(simuweight$cov.pars[2]+1e-10)))
+
+simu_zigma_theta <- simuweight$cov.pars[1]*as.matrix(exp(-dist(simudata[-3], method = "euclidean", diag = F, upper = FALSE, p = 2))/(simuweight$cov.pars[2]+1e-10)) #+1e-10: prevent simu_zigma_theta = 0 or Inf
+
+simu_y_hat =  simu_phi_s0 + simu_c_s0  %*% solve(simu_zigma_theta + (simuweight$nugget+simuweight$cov.pars[1])*diag(nn)) %*% simresidu
+
+# grid point & y_hat
+simu_krig_data <- cbind(simu_grid_poin[1:2],simu_y_hat)
+
+# check MSE & resudual
+simu_MSE = mse(simu_grid_poin$value, simu_krig_data$simu_y_hat)
+cat("simulation MSE:",simu_MSE) 
+simu_residual <- simu_grid_poin$value - simu_krig_data$simu_y_hat
+summary(simu_residual)
+
+# Compare y,y hat,residual
+simu_comptable <-cbind(simu_grid_poin$value,simu_krig_data$simu_y_hat,simu_residual)
+head(simu_comptable,10)
+
+# predict dot map vs real dot map
+predot<-simu_krig_data%>% as.data.frame %>% 
+     ggplot(aes(x, y)) + geom_point(aes(colour = simu_y_hat)) + 
+     labs(title="pre dot") +
+     scale_color_viridis(option = "D")
+
+dotvs <-subplot(predot,realdot)%>% 
+  layout(title = 'predict   &    real')
+dotvs
+
+# 3D in real value---1
+scatter3D(simu_grid_poin$x, simu_grid_poin$y, simu_grid_poin$value,
+                  zlab="value",phi = 10, theta = 10,main="real value Plot")
+# 3D plot in estimate value---1
+scatter3D(simu_krig_data$x, simu_krig_data$y, simu_krig_data$simu_y_hat,
+                  zlab="value",phi = 10, theta = 10,main="estimate value Plot")
+
+```
+
+Leave one out cross-validation (LOOCV)
+
+k-flods cross-validation
+```{r}
+CV<- function(dats, n.folds){
+folds <- list() # flexible object for storing folds
+fold.size <- nrow(dats)/n.folds
+remain <- 1:nrow(dats) # all obs are in
+
+for (i in 1:n.folds){
+select <- sample(remain, fold.size, replace = FALSE)
+#randomly sample “fold_size” from the ‘remaining observations’
+
+folds[[i]] <- select # store indices
+#write a special statement for the last fold — if there are ‘leftover points’
+
+if (i == n.folds){
+folds[[i]] <- remain
+}
+
+#update remaining indices to reflect what was taken out
+remain <- setdiff(remain, select)
+remain
+}
+
+for (i in 1:n.folds){
+# fold i
+indis <- folds[[i]] #unpack into a vector
+train <- dats[-indis, ] #split into train and test sets
+test <- dats[indis, ]
+
+lm.model <- lm(as.numeric(Height) ~ ., data = train)
+pred <- predict(lm.model, newdata = test)
+RMSE<- sqrt(mean((test$Height - pred)^2))
+results[[i]]<- RMSE
+}
+return(results)
+}
+```
+
+
+Real data case (no variables):Log COVID-19 case  in California (part 1)
+```{r, echo=FALSE, warning=FALSE,message=FALSE}
+#rm(list = ls())
+CA_case <- read.csv("D:\\研究所Meeting\\COVID19\\CA government data\\2022_4_18 CA case.csv")[-59,]
+vari_unemp <-read.csv("D:\\研究所Meeting\\COVID19\\Unemployment\\California_U(modify).csv ")
+vari_pover <-read.csv("D:\\研究所Meeting\\COVID19\\Poverty\\california_P(modify).csv ")
+vari_educa <-read.csv("D:\\研究所Meeting\\COVID19\\Education\\california_E(modify).csv ")
+vari_bed <-read.csv("D:\\研究所Meeting\\COVID19\\Hospital beds\\Hospitals(california).csv ")
+vari_houseunits <-read.csv("D:\\研究所Meeting\\COVID19\\housing units\\housing_units_-_single_multi_mobile_-_by_county_2018(California).csv ")
+
+#CA_case$confirm_rate <- percent(CA_case$reported_cases[,2]/sum(CA_case$reported_cases)) 
+#Confirmed rate(單日確診率)
+CA_case$Confirmed_rate <- as.numeric(CA_case$reported_cases/CA_case$population)
+#hospital beds rate(病床持有率)
+CA_case$Hospital_beds_rate <- as.numeric(vari_bed$BEDS/sum(vari_bed$BEDS))
+#Single.Family rate(家庭單位:獨立比率)
+CA_case$Single.Family <- as.numeric(vari_houseunits$Single.Family/sum(vari_houseunits$Single.Family))
+#Multi.Family rate(家庭單位:多戶比率)
+CA_case$Multi.Family <- as.numeric(vari_houseunits$Multi.Family/sum(vari_houseunits$Multi.Family))
+#Mobile.Homes rate(家庭單位:移動比率)
+CA_case$Mobile.Homes <- as.numeric(vari_houseunits$Mobile.Home/sum(vari_houseunits$Mobile.Home))
+# if we want to see the percent(%) of diagnosis rate
+diagnosis_rate_table <-as.data.frame(cbind(CA_case$subregion,percent(CA_case$reported_cases/CA_case$population))) 
+head(CA_case ,10)
+# transform to log data(prevent exterme data)
+#log "e" as base
+CCA_case <-log(CA_case[,10])
+CCA_case[which(!is.finite(CCA_case))] <- 0
+#some unknow point to predict
+simu_grid_poin <-read.csv("D:\\研究所Meeting\\COVID19\\long lat transform to xy\\some grid point.csv ")
+nn<-length(CA_case[,1])
+# show some information in map
+states <- map_data("state")
+ca_df <- states %>%
+  filter(region == "california")
+# california county map
+counties <- map_data("county")
+ca_county <- counties %>%
+  filter(region == "california")
+
+ca_base <- ggplot(data = ca_df, mapping = aes(x = long, y = lat, group = group)) + 
+  coord_quickmap() + 
+  geom_polygon(color = "black", fill = "gray") 
+ca_base + theme_void()
+
+ca_basemap<-ca_base + theme_void() + 
+  geom_polygon(data = ca_county, fill = NA, color = "white") +
+  geom_polygon(color = "black", fill = NA)  # get the state border back on top
+ca_basemap
+
+# add confirmed and merge with county location 
+CA_case$subregion <- tolower(CA_case$subregion)
+ca_fact <- full_join(ca_county, CA_case[,c(-3,-4)], by = "subregion")[-2978,]
+#base dot map
+ca_basemap+
+  geom_point(aes(x = long, y = lat, group = NULL),data = CA_case)
+ca_basemap+
+    geom_point(aes(x = long, y = lat, group = NULL),data = ca_fact)
+#-----------------------------population---------------------------------------#
+califor_population_map <- ca_base + 
+  geom_polygon(data =  ca_fact, aes(fill = population), color = "white") +
+  geom_polygon(color = 'pink', fill = NA) +
+  scale_fill_gradientn(colours = plasma(7))  +
+  labs(title = 'califor population') + theme(plot.title = element_text(hjust = 0.5))
+califor_population_map 
+#-----------------------(since 2020-2022 4/18) cumulative confirmed-------------------#
+#map 
+califor_cumconfi_map <- ca_base + 
+  geom_polygon(data =  ca_fact, aes(fill = cumulative_cases), color = "white") +
+  geom_polygon(color = 'pink', fill = NA) +
+  scale_fill_gradientn(colours = plasma(7))  +
+  labs(title = 'califor cumulative confirmed case') + theme(plot.title = element_text(hjust = 0.5))
+califor_cumconfi_map 
+#-----------------------------(since 2020-2022 4/18) cumulative deaths------------------------#
+califor_cumdea_map <- ca_base + 
+  geom_polygon(data =  ca_fact, aes(fill = cumulative_deaths), color = "white") +
+  geom_polygon(color = 'pink', fill = NA) +
+  scale_fill_gradientn(colours = plasma(7))  +
+  labs(title = 'califor cumulative deaths case') + theme(plot.title = element_text(hjust = 0.5))
+califor_cumdea_map 
+#-----------------------------4/18 confirmed---------------------------------------#
+califor_418confi_map <- ca_base + 
+  geom_polygon(data =  ca_fact, aes(fill = reported_cases), color = "white") +
+  geom_polygon(color = 'pink', fill = NA) +
+  scale_fill_gradientn(colours = plasma(7))  +
+  labs(title = 'califor 4/18 confirmed case') + theme(plot.title = element_text(hjust = 0.5))
+califor_418confi_map 
+
+#-----------------------------4/18 deaths---------------------------------------#
+califor_418deat_map <- ca_base + 
+  geom_polygon(data =  ca_fact, aes(fill = reported_deaths), color = "white") +
+  geom_polygon(color = 'pink', fill = NA) +
+  scale_fill_gradientn(colours = plasma(7))  +
+  labs(title = 'califor 4/18 deaths case') + theme(plot.title = element_text(hjust = 0.5))
+califor_418deat_map 
+#-----------------------------4/18 Confirmed rate ---------------------------------------#
+califor_418diagnosis_map <- ca_base + 
+  geom_polygon(data =  ca_fact, aes(fill = Confirmed_rate), color = "white") +
+  geom_polygon(color = 'pink', fill = NA) +
+  scale_fill_gradientn(colours = plasma(7))  +
+  labs(title = 'califor 4/18 Confirmed rate') + theme(plot.title = element_text(hjust = 0.5))
+califor_418diagnosis_map 
+# transform long lat to x y
+```
+
+Real data case (no variables):Log COVID-19 case & death in California (part 2)
+```{r, echo=FALSE, warning=FALSE,message=FALSE}
+#--------------------------use data in kriging-------------------------#
+###----------number of basis = 5
+# use simulation location in mrts to generate basis
+bbaa <- 20 # number of basis
+simubas <- as.matrix(mrts(knot = CA_case[,3:4], bbaa))
+
+#oc:outcome
+oc<- IRLS(X=simubas,Y=CCA_case,max.iter=100,conv.eps=1e-6)
+oc[[1]]
+irls.simresidu <-oc[[2]]
+
+#covariavce data = (observation data) - mean
+covadata<- CCA_case - simubas%*%oc[[1]]
+# residual test
+par(mfrow = c(1, 2))
+plot(covadata,ylab = "residual")
+#shapiro.test(covadata)
+qqnorm(covadata)
+qqline(covadata)
+
+###---------variogram---------------------###
+# uvec : a vector with values used to define the variogram binning
+#variogram()
+#max.dist: is to cut the tail ,let model fetting more success 
+  jj=max(abs(CA_case[,3:4]))
+  simuvario.b <- variog(coords = CA_case[,3:4], data = covadata,uvec=seq(0,jj, l=350),max.dist=6) 
+  plot(simuvario.b, main="binned variogram") 
+
+  simuini.vals <- expand.grid(seq(0.1,simuvario.b$var.mark,l=jj), seq(0.1,jj,l=jj)) # sigma^2 (partial sill) and phi (range parameter)]
+  #fix.nug=F ->means have nugget effect
+  simuols <- variofit(simuvario.b,fix.nug=F, wei="equal",cov.model="exp", ini=simuini.vals)
+  lines(simuols,lty=3,col=3,lwd=2)
+
+  simuini.valss <- expand.grid(seq(0.1,simuols$cov.pars[1],l=jj), seq(0.1,jj,l=jj)) # sigma^2 (partial sill) and phi (range parameter)
+  simuwls <- variofit(simuvario.b, ini=simuini.valss, fix.nug=F,wei="npairs",cov.model="exp")
+lines(simuwls, lty=2,col=4,lwd=2)
+
+###--------use kriging model  (weight=wls) and see the model fit (MSE)
+  simuweight <- simuwls
+# mean function residu
+# τ^2 + σ^2, corresponds to the variance of the observation process Y
+  simresidu<-as.matrix(irls.simresidu)
+TPS_simu_beta_hat <- oc[[1]]
+# simu_b_grid:grid point(simu_grid_poin) into TPS basis
+  simu_b_grid <- as.matrix(mrts(knot = abs(simu_grid_poin[,2:3]), bbaa))
+  simu_phi_s0 <- t(t(TPS_simu_beta_hat) %*% t(simu_b_grid))
+
+##count coordinate distance with formula 
+#one of the long lat is λA & ΦA, and another was λB & ΦB
+#λA=CA_case[,c("long")][i]  ΦA=CA_case[,c("lat")][i] 
+#λB=simu_grid_poin[,c("long")][j]  ΦB=simu_grid_poin[,c("lat")][j]
+  simu_c_s <-c()
+    for (i in 1:length(CA_case[,c("long")])){
+        for (j in 1:length(simu_grid_poin[,c("long")])){
+            simu_disten<-111.12*cos(1/(sin(CA_case[,c("lat")][i])*sin(simu_grid_poin[,c("lat")][j])+cos(CA_case[,c("lat")][i])*cos(simu_grid_poin[,c("lat")][j])*cos(simu_grid_poin[,c("long")][j] - CA_case[,c("long")])[i]))  
+    simu_c_s <- c(simu_c_s ,simu_disten)
+  }
+      if(i%%10 == 0) cat("running: ", i, "\n")
+}
+
+
+  simu_c_s0 <- simuweight$cov.pars[1]*exp(-abs(matrix(simu_c_s,nrow=nrow(simu_grid_poin)))/(simuweight$cov.pars[2]))
+
+simu_zigma_theta <- simuweight$cov.pars[1]*as.matrix(exp(-dist(CA_case[,3:4], method = "euclidean", diag = F, upper = FALSE, p = 2))/(simuweight$cov.pars[2]+1e-10))
+#+1e-10: prevent simu_zigma_theta = 0 or Inf
+
+simu_y_hat <-  simu_phi_s0 + simu_c_s0  %*% solve(simu_zigma_theta + (simuweight$nugget+simuweight$cov.pars[1])*diag(nn)) %*% simresidu
+
+#boxplot simu_y_hat
+boxplot(simu_y_hat, show.names = T, names="estimate Y")
+#plot simu y data 
+summary(simu_y_hat)
+
+# grid point & y_hat
+simu_krig_data <- cbind(simu_grid_poin[1:3],simu_y_hat)
+
+# predict dot map 
+predot<-simu_krig_data%>% as.data.frame %>% 
+     ggplot(aes(long, lat)) + geom_point(aes(colour = simu_y_hat)) + 
+     labs(title="pre dot") +
+     scale_color_viridis(option = "D")
+predot
+#predict map
+#first add "group"in simu_krig_data
+group<-as.data.frame(seq(from=1, to=length(simu_grid_poin$NAME))) 
+colnames(group)[1]  <- "group"
+simu_krig_data <- cbind(simu_krig_data,group)
+predict_map <- ca_base + 
+    geom_point(data =  simu_krig_data, aes(x=long, y=lat,colour = simu_y_hat)) +
+    geom_polygon(color = 'pink', fill = NA) +
+    scale_color_viridis(option = "H") +
+    labs(title = 'califor cumulative confirmed case') + theme(plot.title = element_text(hjust = 0.5))
+predict_map
+
+# ggplot(simu_krig_data, aes(long, lat, fill = simu_y_hat)) +
+#   geom_raster() +
+#   scale_y_reverse() +
+#   scale_fill_gradient2(
+#     midpoint = 15, 
+#     high = scales::muted("red"), 
+#     low = scales::muted("blue")
+#   ) 
+#########  測試測試
+# 獲取加州的地圖
+#map <- get_map(location = c(left = -125, bottom = 32, right = -113, top = 43), zoom = 6, maptype = "terrain")
+
+# 將地圖作為背景加入到ggplot2中
+#ggplot() + 
+  # 使用geom_tile()函數繪製色彩圖
+ # geom_tile(data = data, aes(x = lon, y = lat, fill = value)) + 
+  # 使用scale_fill_gradient()函數設置色彩
+  #scale_fill_gradient(low = "white", high = "red") + 
+  # 使用ggmap()函數加入地圖背景
+  #ggmap(map)
+
+#predict dot plot
+# ca_basemap+
+#     geom_point(aes(x = long, y = lat, group = NULL),data = simu_krig_data)
+
+# 3D plot in estimate value---1
+scatter3D(simu_krig_data$long, simu_krig_data$lat, simu_krig_data$simu_y_hat,
+                  zlab="value",phi = 10, theta = 10,main="estimate value Plot")
+
+```
+
+Real data case (contain all variables): COVID-19 case Standardization data in California 
+```{r, echo=FALSE, warning=FALSE,message=FALSE}
+#rm(list = ls())
+
+#Join some variables
+vari_unemp <-read.csv("D:\\研究所Meeting\\COVID19\\Unemployment\\California_U(modify).csv ")
+vari_pover <-read.csv("D:\\研究所Meeting\\COVID19\\Poverty\\california_P(modify).csv ")
+vari_educa <-read.csv("D:\\研究所Meeting\\COVID19\\Education\\california_E(modify).csv ")
+vari_bed <-read.csv("D:\\研究所Meeting\\COVID19\\Hospital beds\\Hospitals(california).csv ")
+vari_houseunits <-read.csv("D:\\研究所Meeting\\COVID19\\housing units\\housing_units_-_single_multi_mobile_-_by_county_2018(California).csv ")
+# combine all variables
+intere_vair <- cbind(vari_unemp,CA_case$reported_cases,vari_pover[,2],vari_educa[,2],vari_bed[,2],vari_houseunits[,2:4]) 
+# Standardization
+intere_vair <- cbind(vari_bed$County ,scale(intere_vair[,2:9]))
+#not Standardization
+#intere_vair <- cbind(vari_bed$County ,intere_vair[,2:9])
+colnames(intere_vair) <- c("County", "Unemployment", "reported_cases","Poverty","Education","Hospital_beds","Single.Family","Multi.Family","Mobile.Homes")
+intere_vair<- as.data.frame(apply(intere_vair[,2:9], 2, as.numeric))
+#linear model 
+lmvarioutcome <- lm( reported_cases ~ Unemployment + Poverty + Education + Hospital_beds + Single.Family + Multi.Family + Mobile.Homes,data = intere_vair)
+#linear model (no housing units)
+#lmvarioutcome <- lm( reported_cases ~ Unemployment + Poverty + Education + Hospital_beds ,data = intere_vair)
+ lmvarioutcome$fitted.values
+summary(lmvarioutcome)
+
+   
+#--------------------------use data in kriging-------------------------#
+###----------number of basis = 5
+# use simulation location in mrts to generate basis
+bbaa <- 9 # number of basis
+simubas <- as.matrix(mrts(knot = CA_case[,3:4], bbaa))
+
+#oc:outcome
+oc<- IRLS(X=simubas,Y=intere_vair$reported_cases,max.iter=100,conv.eps=1e-6)
+oc[[1]]
+irls.simresidu <-oc[[2]]
+
+#covariavce data = (Standardization observation data) - mean(basis + Standardization variables)
+covadata<- intere_vair$reported_cases - simubas%*%oc[[1]] - as.matrix(intere_vair[,-2]) %*% as.matrix(lmvarioutcome$coefficients[-1])
+# residual test
+par(mfrow = c(1, 2))
+plot(covadata,ylab = "residual")
+#shapiro.test(covadata)
+qqnorm(covadata)
+qqline(covadata)
+
+###---------variogram---------------------###
+# uvec : a vector with values used to define the variogram binning
+#variogram()
+#max.dist: is to cut the tail ,let model fetting more success 
+  jj=max(abs(CA_case[,3:4]))
+  simuvario.b <- variog(coords = CA_case[,3:4], data = covadata,uvec=seq(0,jj, l=350),max.dist=6) 
+  plot(simuvario.b, main="binned variogram") 
+
+  simuini.vals <- expand.grid(seq(0.1,simuvario.b$var.mark,l=jj), seq(0.1,jj,l=jj)) # sigma^2 (partial sill) and phi (range parameter)]
+  #fix.nug=F ->means have nugget effect
+  simuols <- variofit(simuvario.b,fix.nug=F, wei="equal",cov.model="exp", ini=simuini.vals)
+  lines(simuols,lty=3,col=3,lwd=2)
+
+  simuini.valss <- expand.grid(seq(0.1,simuols$cov.pars[1],l=jj), seq(0.1,jj,l=jj)) # sigma^2 (partial sill) and phi (range parameter)
+  simuwls <- variofit(simuvario.b, ini=simuini.valss, fix.nug=F,wei="npairs",cov.model="exp")
+lines(simuwls, lty=2,col=4,lwd=2)
+
+###--------use kriging model  (weight=wls) and see the model fit (MSE)
+  simuweight <- simuwls
+# mean function residu
+# τ^2 + σ^2, corresponds to the variance of the observation process Y
+  simresidu<-as.matrix(irls.simresidu)
+TPS_simu_beta_hat <- oc[[1]]
+# simu_b_grid:grid point(simu_grid_poin) into TPS basis
+  simu_b_grid <- as.matrix(mrts(knot = abs(simu_grid_poin[,2:3]), bbaa))
+  simu_phi_s0 <- t(t(TPS_simu_beta_hat) %*% t(simu_b_grid))
+
+##count coordinate distance with formula 
+#one of the long lat is λA & ΦA, and another was λB & ΦB
+#λA=CA_case[,c("long")][i]  ΦA=CA_case[,c("lat")][i] 
+#λB=simu_grid_poin[,c("long")][j]  ΦB=simu_grid_poin[,c("lat")][j]
+  simu_c_s <-c()
+    for (i in 1:length(CA_case[,c("long")])){
+        for (j in 1:length(simu_grid_poin[,c("long")])){
+            simu_disten<-111.12*cos(1/(sin(CA_case[,c("lat")][i])*sin(simu_grid_poin[,c("lat")][j])+cos(CA_case[,c("lat")][i])*cos(simu_grid_poin[,c("lat")][j])*cos(simu_grid_poin[,c("long")][j] - CA_case[,c("long")])[i]))  
+    simu_c_s <- c(simu_c_s ,simu_disten)
+  }
+      if(i%%10 == 0) cat("running: ", i, "\n")
+}
+
+
+  simu_c_s0 <- simuweight$cov.pars[1]*exp(-abs(matrix(simu_c_s,nrow=nrow(simu_grid_poin)))/(simuweight$cov.pars[2]))
+
+simu_zigma_theta <- simuweight$cov.pars[1]*as.matrix(exp(-dist(CA_case[,3:4], method = "euclidean", diag = F, upper = FALSE, p = 2))/(simuweight$cov.pars[2]+1e-10))
+#+1e-10: prevent simu_zigma_theta = 0 or Inf
+
+simu_y_hat <-  simu_phi_s0 + simu_c_s0  %*% solve(simu_zigma_theta + (simuweight$nugget+simuweight$cov.pars[1])*diag(nn)) %*% simresidu
+
+#boxplot simu_y_hat
+boxplot(simu_y_hat, show.names = T, names="estimate Y")
+#plot simu y data 
+summary(simu_y_hat)
+
+# grid point & y_hat
+simu_krig_data <- cbind(simu_grid_poin[1:3],simu_y_hat)
+
+# predict dot map 
+predot<-simu_krig_data%>% as.data.frame %>% 
+     ggplot(aes(long, lat)) + geom_point(aes(colour = simu_y_hat)) + 
+     labs(title="pre dot") +
+     scale_color_viridis(option = "D")
+predot
+#predict map
+#first add "group"in simu_krig_data
+group<-as.data.frame(seq(from=1, to=length(simu_grid_poin$NAME))) 
+colnames(group)[1]  <- "group"
+simu_krig_data <- cbind(simu_krig_data,group)
+predict_map <- ca_base + 
+    geom_point(data =  simu_krig_data, aes(x=long, y=lat,colour = simu_y_hat)) +
+    geom_polygon(color = 'pink', fill = NA) +
+    scale_color_viridis(option = "H") +
+    labs(title = 'califor cumulative confirmed case') + theme(plot.title = element_text(hjust = 0.5))
+predict_map
+
+
+#predict dot plot
+# ca_basemap+
+#     geom_point(aes(x = long, y = lat, group = NULL),data = simu_krig_data)
+
+# 3D plot in estimate value---1
+scatter3D(simu_krig_data$long, simu_krig_data$lat, simu_krig_data$simu_y_hat,
+                  zlab="value",phi = 10, theta = 10,main="estimate value Plot")
+
+
+```
+
+Real data case (only important variables): COVID-19 case Standardization data in California 
+```{r, echo=FALSE, warning=FALSE,message=FALSE}
+#rm(list = ls())
+
+#linear model 
+lmvarioutcome <- lm( reported_cases ~   Hospital_beds + Single.Family  + Mobile.Homes,data = intere_vair)
+#linear model (no housing units)
+#lmvarioutcome <- lm( reported_cases ~ Unemployment + Poverty + Education + Hospital_beds ,data = intere_vair)
+ lmvarioutcome$fitted.values
+summary(lmvarioutcome)
+
+   
+#--------------------------use data in kriging-------------------------#
+###----------number of basis = 5
+# use simulation location in mrts to generate basis
+bbaa <- 20 # number of basis
+simubas <- as.matrix(mrts(knot = CA_case[,3:4], bbaa))
+
+#oc:outcome
+oc<- IRLS(X=simubas,Y=intere_vair$reported_cases,max.iter=100,conv.eps=1e-6)
+oc[[1]]
+irls.simresidu <-oc[[2]]
+
+#covariavce data = (Standardization observation data) - mean(basis + Standardization variables)
+covadata<- intere_vair$reported_cases - simubas%*%oc[[1]] - as.matrix(intere_vair[,-c(1,2,3,4,7)]) %*% as.matrix(lmvarioutcome$coefficients[-1])
+# residual test
+par(mfrow = c(1, 2))
+plot(covadata,ylab = "residual")
+#shapiro.test(covadata)
+qqnorm(covadata)
+qqline(covadata)
+
+###---------variogram---------------------###
+# uvec : a vector with values used to define the variogram binning
+#variogram()
+#max.dist: is to cut the tail ,let model fetting more success 
+  jj=max(abs(CA_case[,3:4]))
+  simuvario.b <- variog(coords = CA_case[,3:4], data = covadata,uvec=seq(0,jj, l=350),max.dist=6) 
+  plot(simuvario.b, main="binned variogram") 
+
+  simuini.vals <- expand.grid(seq(0.1,simuvario.b$var.mark,l=jj), seq(0.1,jj,l=jj)) # sigma^2 (partial sill) and phi (range parameter)]
+  #fix.nug=F ->means have nugget effect
+  simuols <- variofit(simuvario.b,fix.nug=F, wei="equal",cov.model="exp", ini=simuini.vals)
+  lines(simuols,lty=3,col=3,lwd=2)
+
+  simuini.valss <- expand.grid(seq(0.1,simuols$cov.pars[1],l=jj), seq(0.1,jj,l=jj)) # sigma^2 (partial sill) and phi (range parameter)
+  simuwls <- variofit(simuvario.b, ini=simuini.valss, fix.nug=F,wei="npairs",cov.model="exp")
+lines(simuwls, lty=2,col=4,lwd=2)
+
+###--------use kriging model  (weight=wls) and see the model fit (MSE)
+  simuweight <- simuwls
+# mean function residu
+# τ^2 + σ^2, corresponds to the variance of the observation process Y
+  simresidu<-as.matrix(irls.simresidu)
+TPS_simu_beta_hat <- oc[[1]]
+# simu_b_grid:grid point(simu_grid_poin) into TPS basis
+  simu_b_grid <- as.matrix(mrts(knot = abs(simu_grid_poin[,2:3]), bbaa))
+  simu_phi_s0 <- t(t(TPS_simu_beta_hat) %*% t(simu_b_grid))
+
+##count coordinate distance with formula 
+#one of the long lat is λA & ΦA, and another was λB & ΦB
+#λA=CA_case[,c("long")][i]  ΦA=CA_case[,c("lat")][i] 
+#λB=simu_grid_poin[,c("long")][j]  ΦB=simu_grid_poin[,c("lat")][j]
+  simu_c_s <-c()
+    for (i in 1:length(CA_case[,c("long")])){
+        for (j in 1:length(simu_grid_poin[,c("long")])){
+            simu_disten<-111.12*cos(1/(sin(CA_case[,c("lat")][i])*sin(simu_grid_poin[,c("lat")][j])+cos(CA_case[,c("lat")][i])*cos(simu_grid_poin[,c("lat")][j])*cos(simu_grid_poin[,c("long")][j] - CA_case[,c("long")])[i]))  
+    simu_c_s <- c(simu_c_s ,simu_disten)
+  }
+      if(i%%10 == 0) cat("running: ", i, "\n")
+}
+
+
+  simu_c_s0 <- simuweight$cov.pars[1]*exp(-abs(matrix(simu_c_s,nrow=nrow(simu_grid_poin)))/(simuweight$cov.pars[2]))
+
+simu_zigma_theta <- simuweight$cov.pars[1]*as.matrix(exp(-dist(CA_case[,3:4], method = "euclidean", diag = F, upper = FALSE, p = 2))/(simuweight$cov.pars[2]+1e-10))
+#+1e-10: prevent simu_zigma_theta = 0 or Inf
+
+simu_y_hat <-  simu_phi_s0 + simu_c_s0  %*% solve(simu_zigma_theta + (simuweight$nugget+simuweight$cov.pars[1])*diag(nn)) %*% simresidu
+
+#boxplot simu_y_hat
+boxplot(simu_y_hat, show.names = T, names="estimate Y")
+#plot simu y data 
+
+summary(simu_y_hat)
+
+# grid point & y_hat
+simu_krig_data <- cbind(simu_grid_poin[1:3],simu_y_hat)
+
+# predict dot map 
+predot<-simu_krig_data%>% as.data.frame %>% 
+     ggplot(aes(long, lat)) + geom_point(aes(colour = simu_y_hat)) + 
+     labs(title="pre dot") +
+     scale_color_viridis(option = "D")
+predot
+#predict map
+#first add "group"in simu_krig_data
+group<-as.data.frame(seq(from=1, to=length(simu_grid_poin$NAME))) 
+colnames(group)[1]  <- "group"
+simu_krig_data <- cbind(simu_krig_data,group)
+predict_map <- ca_base + 
+    geom_point(data =  simu_krig_data, aes(x=long, y=lat,colour = simu_y_hat)) +
+    geom_polygon(color = 'pink', fill = NA) +
+    scale_color_viridis(option = "H") +
+    labs(title = 'califor cumulative confirmed case') + theme(plot.title = element_text(hjust = 0.5))
+predict_map
+
+
+#predict dot plot
+# ca_basemap+
+#     geom_point(aes(x = long, y = lat, group = NULL),data = simu_krig_data)
+
+# 3D plot in estimate value---1
+scatter3D(simu_krig_data$long, simu_krig_data$lat, simu_krig_data$simu_y_hat,
+                  zlab="value",phi = 10, theta = 10,main="estimate value Plot")
+```
+
+Real data case (contain all variables(rate)): COVID-19 confirmed rate  data in California 
+```{r, echo=FALSE, warning=FALSE,message=FALSE}
+#rm(list = ls())
+
+#Join some variables
+vari_unemp <-read.csv("D:\\研究所Meeting\\COVID19\\Unemployment\\California_U(modify).csv ")
+vari_pover <-read.csv("D:\\研究所Meeting\\COVID19\\Poverty\\california_P(modify).csv ")
+vari_educa <-read.csv("D:\\研究所Meeting\\COVID19\\Education\\california_E(modify).csv ")
+vari_bed <-read.csv("D:\\研究所Meeting\\COVID19\\Hospital beds\\Hospitals(california).csv ")
+vari_houseunits <-read.csv("D:\\研究所Meeting\\COVID19\\housing units\\housing_units_-_single_multi_mobile_-_by_county_2018(California).csv ")
+
+# combine all variables
+intere_vair <- cbind(vari_unemp,CA_case$Confirmed_rate,vari_pover[,2],vari_educa[,2],vari_bed[,2],vari_houseunits[,2:4]) 
+
+intere_vair <- cbind(vari_bed$County ,intere_vair[,2:9])
+colnames(intere_vair) <- c("County", "Unemployment", "reported_cases","Poverty","Education","Hospital_beds","Single.Family","Multi.Family","Mobile.Homes")
+#hospital beds rate(病床持有率)
+intere_vair$Hospital_beds <- as.numeric(intere_vair$Hospital_beds/sum(intere_vair$Hospital_beds))
+#Single.Family rate(家庭單位:獨立比率)
+intere_vair$Single.Family <- as.numeric(intere_vair$Single.Family/sum(intere_vair$Single.Family))
+#Multi.Family rate(家庭單位:多戶比率)
+intere_vair$Multi.Family <- as.numeric(intere_vair$Multi.Family/sum(intere_vair$Multi.Family))
+#Mobile.Homes rate(家庭單位:移動比率)
+intere_vair$Mobile.Homes <- as.numeric(intere_vair$Mobile.Home/sum(intere_vair$Mobile.Home))
+# as numeric
+intere_vair<- as.data.frame(apply(intere_vair[,2:9], 2, as.numeric))
+# plot some map
+#-----------------------------hospital beds rate------------------------#
+califor_hospital_beds_rate_map <- ca_base + 
+  geom_polygon(data =  ca_fact, aes(fill = Hospital_beds), color = "white") +
+  geom_polygon(color = 'pink', fill = NA) +
+  scale_fill_gradientn(colours = plasma(7))  +
+  labs(title = 'califor cumulative deaths case') + theme(plot.title = element_text(hjust = 0.5))
+califor_hospital_beds_rate_map 
+#-----------------------------Single.Family rate------------------------#
+califor_Single_Family_rate_map <- ca_base + 
+  geom_polygon(data =  ca_fact, aes(fill = Single.Family), color = "white") +
+  geom_polygon(color = 'pink', fill = NA) +
+  scale_fill_gradientn(colours = plasma(7))  +
+  labs(title = 'califor cumulative deaths case') + theme(plot.title = element_text(hjust = 0.5))
+califor_Single_Family_rate_map
+#-----------------------------Multi.Family rate------------------------#
+califor_Multi_Family_rate_map <- ca_base + 
+  geom_polygon(data =  ca_fact, aes(fill = Multi.Family), color = "white") +
+  geom_polygon(color = 'pink', fill = NA) +
+  scale_fill_gradientn(colours = plasma(7))  +
+  labs(title = 'califor cumulative deaths case') + theme(plot.title = element_text(hjust = 0.5))
+califor_Multi_Family_rate_map 
+#-----------------------------Mobile.Homes rate------------------------#
+califor_Mobile_Homes_rate_map <- ca_base + 
+  geom_polygon(data =  ca_fact, aes(fill = Mobile.Homes), color = "white") +
+  geom_polygon(color = 'pink', fill = NA) +
+  scale_fill_gradientn(colours = plasma(7))  +
+  labs(title = 'califor cumulative deaths case') + theme(plot.title = element_text(hjust = 0.5))
+califor_Mobile_Homes_rate_map
+#linear model 
+lmvarioutcome <- lm( reported_cases ~ Unemployment + Poverty + Education + Hospital_beds + Single.Family + Multi.Family + Mobile.Homes,data = intere_vair)
+#linear model (no housing units)
+#lmvarioutcome <- lm( reported_cases ~ Unemployment + Poverty + Education + Hospital_beds ,data = intere_vair)
+ lmvarioutcome$fitted.values
+summary(lmvarioutcome)
+   
+#--------------------------use data in kriging-------------------------#
+###----------number of basis = 5
+# use simulation location in mrts to generate basis
+bbaa <- 9 # number of basis
+simubas <- as.matrix(mrts(knot = CA_case[,3:4], bbaa))
+
+#oc:outcome
+oc<- IRLS(X=simubas,Y=intere_vair$reported_cases,max.iter=100,conv.eps=1e-6)
+oc[[1]]
+irls.simresidu <-oc[[2]]
+
+#covariavce data = (Standardization observation data) - mean(basis + Standardization variables)
+covadata<- intere_vair$reported_cases - simubas%*%oc[[1]] - as.matrix(intere_vair[,-2]) %*% as.matrix(lmvarioutcome$coefficients[-1])
+# residual test
+par(mfrow = c(1, 2))
+plot(covadata,ylab = "residual")
+#shapiro.test(covadata)
+qqnorm(covadata)
+qqline(covadata)
+
+###---------variogram---------------------###
+# uvec : a vector with values used to define the variogram binning
+#variogram()
+#max.dist: is to cut the tail ,let model fetting more success 
+  jj=max(abs(CA_case[,3:4]))
+  simuvario.b <- variog(coords = CA_case[,3:4], data = covadata,uvec=seq(0,jj, l=350),max.dist=6) 
+  plot(simuvario.b, main="binned variogram") 
+
+  simuini.vals <- expand.grid(seq(0.1,simuvario.b$var.mark,l=jj), seq(0.5,jj,l=jj)) # sigma^2 (partial sill) and phi (range parameter)]
+  #fix.nug=F ->means have nugget effect
+  simuols <- variofit(simuvario.b,fix.nug=F, wei="equal",cov.model="exp", ini=simuini.vals)
+  lines(simuols,lty=3,col=3,lwd=2)
+
+  simuini.valss <- expand.grid(seq(0.1,simuols$cov.pars[1],l=jj), seq(0.5,jj,l=jj)) # sigma^2 (partial sill) and phi (range parameter)
+  simuwls <- variofit(simuvario.b, ini=simuini.valss, fix.nug=F,wei="npairs",cov.model="exp")
+lines(simuwls, lty=2,col=4,lwd=2)
+
+###--------use kriging model  (weight=wls) and see the model fit (MSE)
+  simuweight <- simuwls
+# mean function residu
+# τ^2 + σ^2, corresponds to the variance of the observation process Y
+  simresidu<-as.matrix(irls.simresidu)
+TPS_simu_beta_hat <- oc[[1]]
+# simu_b_grid:grid point(simu_grid_poin) into TPS basis
+  simu_b_grid <- as.matrix(mrts(knot = abs(simu_grid_poin[,2:3]), bbaa))
+  simu_phi_s0 <- t(t(TPS_simu_beta_hat) %*% t(simu_b_grid))
+
+##count coordinate distance with formula 
+#one of the long lat is λA & ΦA, and another was λB & ΦB
+#λA=CA_case[,c("long")][i]  ΦA=CA_case[,c("lat")][i] 
+#λB=simu_grid_poin[,c("long")][j]  ΦB=simu_grid_poin[,c("lat")][j]
+  simu_c_s <-c()
+    for (i in 1:length(CA_case[,c("long")])){
+        for (j in 1:length(simu_grid_poin[,c("long")])){
+            simu_disten<-111.12*cos(1/(sin(CA_case[,c("lat")][i])*sin(simu_grid_poin[,c("lat")][j])+cos(CA_case[,c("lat")][i])*cos(simu_grid_poin[,c("lat")][j])*cos(simu_grid_poin[,c("long")][j] - CA_case[,c("long")])[i]))  
+    simu_c_s <- c(simu_c_s ,simu_disten)
+  }
+      if(i%%10 == 0) cat("running: ", i, "\n")
+    }
+  
+  simu_c_s0 <- simuweight$cov.pars[1]*exp(-abs(matrix(simu_c_s,nrow=nrow(simu_grid_poin)))/(simuweight$cov.pars[2]))
+  
+simu_zigma_theta <- simuweight$cov.pars[1]*as.matrix(exp(-dist(CA_case[,3:4], method = "euclidean", diag = F, upper = FALSE, p = 2))/(simuweight$cov.pars[2]+1e-10))
+#+1e-10: prevent simu_zigma_theta = 0 or Inf
+
+simu_y_hat <-  simu_phi_s0 + simu_c_s0  %*% solve(simu_zigma_theta + (simuweight$nugget+simuweight$cov.pars[1])*diag(nn)) %*% simresidu
+
+#boxplot simu_y_hat
+boxplot(simu_y_hat, show.names = T, names="estimate Y")
+#plot simu y data 
+
+summary(simu_y_hat)
+
+# grid point & y_hat
+simu_krig_data <- cbind(simu_grid_poin[1:3],simu_y_hat)
+
+# predict dot map 
+predot<-simu_krig_data%>% as.data.frame %>% 
+     ggplot(aes(long, lat)) + geom_point(aes(colour = simu_y_hat)) + 
+     labs(title="pre dot") +
+     scale_color_viridis(option = "H")
+predot
+#predict map
+#first add "group"in simu_krig_data
+group<-as.data.frame(seq(from=1, to=length(simu_grid_poin$NAME))) 
+colnames(group)[1]  <- "group"
+simu_krig_data <- cbind(simu_krig_data,group)
+predict_map <- ca_base + 
+    geom_point(data =  simu_krig_data, aes(x=long, y=lat,colour = simu_y_hat)) +
+    geom_polygon(color = 'pink', fill = NA) +
+    scale_color_viridis(option = "H") +
+    labs(title = 'califor cumulative confirmed case') + theme(plot.title = element_text(hjust = 0.5))
+predict_map
+
+
+#predict dot plot
+# ca_basemap+
+#     geom_point(aes(x = long, y = lat, group = NULL),data = simu_krig_data)
+
+# 3D plot in estimate value---1
+scatter3D(simu_krig_data$long, simu_krig_data$lat, simu_krig_data$simu_y_hat,
+                  zlab="value",phi = 10, theta = 10,main="estimate value Plot")
+```
+
+Real data case (only important variables(rate)): COVID-19 confirmed rate  data in California 
+```{r, echo=FALSE, warning=FALSE,message=FALSE}
+#rm(list = ls())
+
+#linear model 
+lmvarioutcome <- lm( reported_cases ~  Poverty + Education + Hospital_beds + Multi.Family,data = intere_vair)
+#linear model (no housing units)
+#lmvarioutcome <- lm( reported_cases ~ Unemployment + Poverty + Education + Hospital_beds ,data = intere_vair)
+ lmvarioutcome$fitted.values
+summary(lmvarioutcome)
+
+   
+#--------------------------use data in kriging-------------------------#
+###----------number of basis = 5
+# use simulation location in mrts to generate basis
+bbaa <- 9 # number of basis
+simubas <- as.matrix(mrts(knot = CA_case[,3:4], bbaa))
+
+#oc:outcome
+oc<- IRLS(X=simubas,Y=intere_vair$reported_cases,max.iter=100,conv.eps=1e-6)
+oc[[1]]
+irls.simresidu <-oc[[2]]
+
+#covariavce data = (Standardization observation data) - mean(basis + Standardization variables)
+covadata<- intere_vair$reported_cases - simubas%*%oc[[1]] - as.matrix(intere_vair[,-c(1,2,6,8)]) %*% as.matrix(lmvarioutcome$coefficients[-1])
+# residual test
+par(mfrow = c(1, 2))
+plot(covadata,ylab = "residual")
+#shapiro.test(covadata)
+qqnorm(covadata)
+qqline(covadata)
+
+
+###---------variogram---------------------###
+# uvec : a vector with values used to define the variogram binning
+#variogram()
+#max.dist: is to cut the tail ,let model fetting more success 
+  jj=max(abs(CA_case[,3:4]))
+  simuvario.b <- variog(coords = CA_case[,3:4], data = covadata,uvec=seq(0,jj, l=700),max.dist=6) 
+  plot(simuvario.b, main="binned variogram") 
+
+  simuini.vals <- expand.grid(seq(0.1,simuvario.b$var.mark,l=jj), seq(0.5,jj,l=jj)) # sigma^2 (partial sill) and phi (range parameter)]
+  #fix.nug=F ->means have nugget effect
+  simuols <- variofit(simuvario.b,fix.nug=F, wei="equal",cov.model="exp", ini=simuini.vals)
+  lines(simuols,lty=3,col=3,lwd=2)
+
+  simuini.valss <- expand.grid(seq(0.1,simuols$cov.pars[1],l=jj), seq(0.5,jj,l=jj)) # sigma^2 (partial sill) and phi (range parameter)
+  simuwls <- variofit(simuvario.b, ini=simuini.valss, fix.nug=F,wei="npairs",cov.model="exp")
+lines(simuwls, lty=2,col=4,lwd=2)
+
+###--------use kriging model  (weight=wls) and see the model fit (MSE)
+  simuweight <- simuwls
+# mean function residu
+# τ^2 + σ^2, corresponds to the variance of the observation process Y
+  simresidu<-as.matrix(irls.simresidu)
+TPS_simu_beta_hat <- oc[[1]]
+# simu_b_grid:grid point(simu_grid_poin) into TPS basis
+  simu_b_grid <- as.matrix(mrts(knot = abs(simu_grid_poin[,2:3]), bbaa))
+  simu_phi_s0 <- t(t(TPS_simu_beta_hat) %*% t(simu_b_grid))
+
+##count coordinate distance with formula 
+#one of the long lat is λA & ΦA, and another was λB & ΦB
+#λA=CA_case[,c("long")][i]  ΦA=CA_case[,c("lat")][i] 
+#λB=simu_grid_poin[,c("long")][j]  ΦB=simu_grid_poin[,c("lat")][j]
+  simu_c_s <-c()
+    for (i in 1:length(CA_case[,c("long")])){
+        for (j in 1:length(simu_grid_poin[,c("long")])){
+            simu_disten<-111.12*cos(1/(sin(CA_case[,c("lat")][i])*sin(simu_grid_poin[,c("lat")][j])+cos(CA_case[,c("lat")][i])*cos(simu_grid_poin[,c("lat")][j])*cos(simu_grid_poin[,c("long")][j] - CA_case[,c("long")])[i]))  
+    simu_c_s <- c(simu_c_s ,simu_disten)
+  }
+      if(i%%10 == 0) cat("running: ", i, "\n")
+}
+
+
+  simu_c_s0 <- simuweight$cov.pars[1]*exp(-abs(matrix(simu_c_s,nrow=nrow(simu_grid_poin)))/(simuweight$cov.pars[2]))
+
+simu_zigma_theta <- simuweight$cov.pars[1]*as.matrix(exp(-dist(CA_case[,3:4], method = "euclidean", diag = F, upper = FALSE, p = 2))/(simuweight$cov.pars[2]+1e-10))
+#+1e-10: prevent simu_zigma_theta = 0 or Inf
+
+simu_y_hat <-  simu_phi_s0 + simu_c_s0  %*% solve(simu_zigma_theta + (simuweight$nugget+simuweight$cov.pars[1])*diag(nn)) %*% simresidu
+
+#boxplot simu_y_hat
+boxplot(simu_y_hat, show.names = T, names="estimate Y")
+#plot simu y data 
+
+summary(simu_y_hat)
+
+# grid point & y_hat
+simu_krig_data <- cbind(simu_grid_poin[1:3],simu_y_hat)
+
+# predict dot map 
+predot<-simu_krig_data%>% as.data.frame %>%
+     ggplot(aes(long, lat)) + geom_point(aes(colour = simu_y_hat)) +
+     labs(title="pre dot") +
+     scale_color_viridis(option = "H")
+predot
+#predict map
+#first add "group"in simu_krig_data
+group<-as.data.frame(seq(from=1, to=length(simu_grid_poin$NAME))) 
+colnames(group)[1]  <- "group"
+simu_krig_data <- cbind(simu_krig_data,group)
+predict_map <- ca_base + 
+    geom_point(data =  simu_krig_data, aes(x=long, y=lat,colour = simu_y_hat)) +
+    geom_polygon(color = 'pink', fill = NA) +
+    scale_color_viridis(option = "H") +
+    labs(title = 'califor cumulative confirmed case') + theme(plot.title = element_text(hjust = 0.5))
+predict_map
+
+## cf with confrimed rate map
+califor_418diagnosis_map 
+
+#predict dot plot
+# ca_basemap+
+#     geom_point(aes(x = long, y = lat, group = NULL),data = simu_krig_data)
+
+# 3D plot in estimate value---1
+scatter3D(simu_krig_data$long, simu_krig_data$lat, simu_krig_data$simu_y_hat,
+                  zlab="value",phi = 10, theta = 10,main="estimate value Plot")
+
+```
